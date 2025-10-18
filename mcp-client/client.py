@@ -711,7 +711,52 @@ For conversational queries (greetings, known info), use tool: null."""
             box=box.DOUBLE
         ))
         console.print()
+
+        # INTELLIGENT POST-PROCESSING: Let AI analyze results and answer the question
+        if success > 0:
+            await self.post_process_results(user_request, results, plan)
     
+    async def post_process_results(self, user_request: str, results: list, plan: dict):
+        """
+        PURE AI POST-PROCESSING - Zero hardcoded instructions
+        Just give context, let the AI brain figure out what to say
+        """
+        try:
+            # Get session context with newly read files
+            session_context = self.get_session_context()
+
+            # Pure AI prompt - minimal, let brain decide
+            analysis_prompt = f"""User asked: "{user_request}"
+
+What I did:
+{plan.get('understanding', '')}
+
+Context and files in memory:
+{session_context}
+
+Respond to the user's question naturally based on what's available."""
+
+            # Get AI analysis
+            with Progress(SpinnerColumn(), TextColumn("[cyan]{{task.description}}"), console=console) as progress:
+                task = progress.add_task("💡 Thinking...", total=None)
+
+                response = ollama.chat(
+                    model=self.current_model,
+                    messages=[{"role": "user", "content": analysis_prompt}],
+                    options={"temperature": 0.3}
+                )
+
+                progress.update(task, completed=True)
+
+            explanation = response['message']['content'].strip()
+
+            # Display AI response
+            console.print(f"\n[bold cyan]💡[/bold cyan] {explanation}\n")
+
+        except Exception as e:
+            # Silently fail - post-processing is optional
+            pass
+
     async def handle_conversation(self, user_request: str):
         """Handle simple conversation without tools"""
         try:
