@@ -301,39 +301,17 @@ if __name__ == "__main__":
     import sys
 
     # Check if running in stdio mode (default) or SSE mode
-    if "--sse" in sys.argv:
-        # SSE mode for web server
+    if "--sse" in sys.argv or "--http" in sys.argv:
+        # SSE mode for web server (matches reference implementation)
         import uvicorn
         from datetime import datetime, timezone
-        from starlette.routing import Route
-        from starlette.responses import JSONResponse
 
-        async def health_check(request):
-            return JSONResponse({
-                "status": "healthy",
-                "service": "code-assistant-mcp-server",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            })
-
-        async def get_root(request):
-            return JSONResponse({
-                "name": "Code Assistant MCP Server",
-                "version": "1.0.0",
-                "endpoints": {
-                    "/": "Server info",
-                    "/health": "Health check",
-                    "/sse": "MCP communication endpoint"
-                }
-            })
-
+        # Use sse_app to match reference pattern
         app = mcp.sse_app()
-        app.router.routes.extend([
-            Route("/health", health_check, methods=["GET"]),
-            Route("/", get_root, methods=["GET"]),
-        ])
 
         print("🚀 Starting Code Assistant MCP Server on http://localhost:8000")
         print("📡 SSE endpoint: http://localhost:8000/sse")
+        print("📡 Connect client with: python3 client.py --http http://localhost:8000/sse")
         uvicorn.run(app, host="0.0.0.0", port=8000)
     else:
         # Default: stdio mode for direct client connection

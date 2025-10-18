@@ -12,12 +12,13 @@ import traceback
 from typing import Optional
 from pathlib import Path
 import ollama
+import argparse
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import box
 
@@ -58,20 +59,34 @@ class CommandCompleter(Completer):
                     )
 
 class MCPClient:
-    """MCP Client using stdio"""
+    """MCP Client supporting both stdio and HTTP modes"""
 
-    def __init__(self, server_path: str, workspace: str):
+    def __init__(self, server_path: str = None, workspace: str = ".", http_url: str = None):
         self.server_path = server_path
         self.workspace = workspace
+        self.http_url = http_url
         self.stdio_context = None
+        self.http_context = None
         self.client = None
+        self.mode = "http" if http_url else "stdio"
 
     async def start(self):
+        """Start MCP client in either stdio or HTTP mode"""
+        if self.mode == "http":
+            return await self._start_http()
+        else:
+            return await self._start_stdio()
+
+    async def _start_stdio(self):
         """Start MCP server as subprocess and connect via stdio"""
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
         try:
+            if not self.server_path:
+                console.print("[red]❌ Server path required for stdio mode[/red]")
+                return False
+
             # Start server as subprocess
             server_params = StdioServerParameters(
                 command="python3",
@@ -94,6 +109,30 @@ class MCPClient:
 
         except Exception as e:
             console.print(f"[red]❌ Failed to start MCP server: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            return False
+
+    async def _start_http(self):
+        """Connect to standalone HTTP MCP server"""
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+
+        try:
+            # Connect to HTTP server using SSE
+            self.http_context = sse_client(self.http_url)
+            read_stream, write_stream = await self.http_context.__aenter__()
+
+            # Create client session
+            self.client = ClientSession(read_stream, write_stream)
+            await self.client.__aenter__()
+
+            # Initialize the session
+            await self.client.initialize()
+
+            return True
+
+        except Exception as e:
+            console.print(f"[red]❌ Failed to connect to HTTP server at {self.http_url}: {e}[/red]")
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
             return False
 
@@ -143,6 +182,11 @@ class MCPClient:
         if self.stdio_context:
             try:
                 await self.stdio_context.__aexit__(None, None, None)
+            except:
+                pass
+        if self.http_context:
+            try:
+                await self.http_context.__aexit__(None, None, None)
             except:
                 pass
 
@@ -815,7 +859,7 @@ Keep responses informative and reference specific files/context when relevant.""
             except Exception as e:
                 console.print(f"[red]❌ {e}[/red]\n")
     
-    async def run(self):
+    async def run(self, http_url: str = None):
         """Start agent"""
         console.clear()
         console.print(Panel.fit(
@@ -836,18 +880,25 @@ Keep responses informative and reference specific files/context when relevant.""
             workspace = "."
             console.print("[dim]Using current directory[/dim]")
 
-        # Auto-detect server path
-        client_dir = Path(__file__).parent.resolve()
-        project_root = client_dir.parent
-        server_path = project_root / "mcp-server" / "server.py"
+        # Determine connection mode
+        if http_url:
+            # HTTP mode - connect to standalone server
+            console.print(f"[cyan]🌐 Connecting to HTTP server: {http_url}[/cyan]")
+            console.print("\n")
+            self.client = MCPClient(workspace=workspace, http_url=http_url)
+        else:
+            # Stdio mode - auto-start server
+            client_dir = Path(__file__).parent.resolve()
+            project_root = client_dir.parent
+            server_path = project_root / "mcp-server" / "server.py"
 
-        if not server_path.exists():
-            console.print(f"[red]❌ Server not found at: {server_path}[/red]")
-            return
+            if not server_path.exists():
+                console.print(f"[red]❌ Server not found at: {server_path}[/red]")
+                return
 
-        console.print(f"[dim]Starting MCP server: {server_path.name}[/dim]")
-        console.print("\n")
-        self.client = MCPClient(str(server_path), workspace)
+            console.print(f"[dim]Starting MCP server: {server_path.name}[/dim]")
+            console.print("\n")
+            self.client = MCPClient(server_path=str(server_path), workspace=workspace)
         
         try:
             with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as progress:
@@ -888,8 +939,25 @@ Keep responses informative and reference specific files/context when relevant.""
                 await self.client.close()
 
 async def main():
-    agent = AutonomousCodingAgent(default_model="mistral-nemo:12b-instruct-2407-q2_K")
-    await agent.run()
+    parser = argparse.ArgumentParser(description="Autonomous AI Coding Assistant")
+    parser.add_argument(
+        "--http",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="Connect to HTTP MCP server (e.g., http://localhost:8000). Default: stdio mode (auto-start server)"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="mistral-nemo:12b-instruct-2407-q2_K",
+        help="Default Ollama model to use"
+    )
+
+    args = parser.parse_args()
+
+    agent = AutonomousCodingAgent(default_model=args.model)
+    await agent.run(http_url=args.http)
 
 if __name__ == "__main__":
     asyncio.run(main())
