@@ -779,9 +779,10 @@ Keep responses informative and reference specific files/context when relevant.""
             try:
                 # Get input with prompt_toolkit (supports history and completion)
                 model_name = self.current_model.split(':')[0]
-                user_input = await session.prompt_async(
+                user_input_raw = await session.prompt_async(
                     HTML(f'<cyan><b>👤 You</b></cyan> <dim>({model_name})</dim> ')
-                ).strip()
+                )
+                user_input = user_input_raw.strip()
                 
                 if not user_input:
                     continue

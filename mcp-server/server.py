@@ -305,10 +305,11 @@ if __name__ == "__main__":
 
     # Health check endpoint
     async def health_check(request):
+        from datetime import timezone
         return JSONResponse({
             "status": "healthy",
             "service": "code-assistant-mcp-server",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
     async def get_root(request):
