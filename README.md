@@ -1,68 +1,85 @@
 # Autonomous AI Coding Assistant
 
-A powerful AI-powered coding assistant that uses Model Context Protocol (MCP) to provide intelligent code assistance, file operations, and project management capabilities.
+A Claude Code-like AI assistant powered by Ollama and MCP (Model Context Protocol). Features intelligent code assistance, file operations, command history, and autocomplete.
 
-## ✨ Features
+## ✨ Key Features
+
+### 🎯 Claude Code-Inspired UX
+- **Command History**: Press ↑/↓ to navigate previous commands
+- **Smart Autocomplete**: Type `/` to see filtered command suggestions
+- **Session Memory**: Remembers files and context during conversation
+- **Intelligent Planning**: Breaks down tasks into smart, executable steps
 
 ### 🔧 Core Capabilities
-- **File Operations**: Read, write, edit, and manage files with full validation
-- **Code Search**: Search for patterns across your codebase
-- **Project Analysis**: Automatic detection of project types and structure
-- **Safe Command Execution**: Execute shell commands with security checks
-- **Directory Management**: Create and navigate directory structures
+- **File Operations**: Read, write, edit files with validation
+- **Code Search**: Pattern matching across your codebase
+- **Project Analysis**: Auto-detect project types and structure
+- **Safe Command Execution**: Security-checked shell commands
+- **Directory Management**: Create and navigate directories
 
-### 🛡️ Security Features
+### 🛡️ Security
 - **Path Validation**: Prevents directory traversal attacks
-- **Command Safety**: Blocks dangerous shell commands
-- **Workspace Isolation**: All operations are confined to the workspace
-- **Input Sanitization**: All inputs are validated and sanitized
+- **Command Safety**: Blocks dangerous operations
+- **Workspace Isolation**: All operations confined to workspace
 
-### 🚀 Enhanced User Experience
-- **Retry Logic**: Automatic retry for failed connections
-- **Timeout Handling**: Prevents hanging operations
-- **Rich Feedback**: Beautiful terminal interface with progress indicators
-- **Error Recovery**: Graceful handling of errors with helpful messages
-- **Tool Validation**: Ensures tools exist before execution
+### 💻 Advanced Commands
+- `/model` - Switch between Ollama models
+- `/session` - View session memory
+- `/history` - See command history
+- `/context` - Manage context length
+- `/clear` - Clear screen
+- `/help` - Show all commands
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Client        │    │   MCP Server    │    │   Ollama        │
-│   (Rich UI)     │◄──►│   (FastMCP)     │    │   (AI Models)   │
-│                 │    │                 │    │                 │
-│ • User Interface│    │ • File Ops      │    │ • Code Planning │
-│ • Task Planning │    │ • Code Search   │    │ • Suggestions  │
-│ • Error Handling│    │ • Security      │    │ • Analysis      │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+┌─────────────────────┐         ┌──────────────────────┐
+│   MCP Server        │         │   Client             │
+│   (Port 8000)       │◄───────►│   (Interactive CLI)  │
+│                     │   HTTP/ │                      │
+│ • File tools        │   SSE   │ • Command history    │
+│ • Code search       │         │ • Autocomplete       │
+│ • Project analysis  │         │ • Session memory     │
+│ • Security checks   │         │ • Rich UI            │
+└─────────────────────┘         └──────────────────────┘
+           │                              │
+           │                              │
+           ▼                              ▼
+    FastMCP Protocol              Ollama AI Models
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.8+
-- Ollama installed and running
-- At least one AI model (e.g., `mistral-nemo:12b-instruct-2407-q2_K`)
+- Ollama installed with at least one model
 
 ### Installation
 
-1. **Clone and setup**:
+1. **Setup dependencies**:
    ```bash
-   git clone <repository>
-   cd coding-assistant
    python setup.py
    ```
 
-2. **Install Ollama** (if not already installed):
+2. **Install Ollama models**:
    ```bash
-   # Visit https://ollama.ai/ for installation instructions
    ollama pull mistral-nemo:12b-instruct-2407-q2_K
+   # or any other model you prefer
+   ollama pull llama3.2
    ```
 
-3. **Run the assistant**:
+3. **Start the MCP server** (Terminal 1):
    ```bash
-   cd mcp-client
-   python client.py
+   ./start_server.sh
+   # Or manually:
+   cd mcp-server && python3 server.py
+   ```
+
+4. **Start the client** (Terminal 2):
+   ```bash
+   ./start_client.sh
+   # Or manually:
+   cd mcp-client && python3 client.py
    ```
 
 ## 📋 Available Tools
@@ -101,27 +118,56 @@ A powerful AI-powered coding assistant that uses Model Context Protocol (MCP) to
 
 ## 🎯 Usage Examples
 
-### Basic File Operations
+### Interactive Session
 ```
-User: Create a new Python file called hello.py with a hello world function
-Assistant: [Plans and executes]
-✅ Created hello.py with hello world function
+👤 You (mistral-nemo) list files in this directory
+🤖 [Plans and executes list_files]
+📁 Found 10 items:
+   📄 client.py
+   📄 requirements.txt
+   ...
+
+👤 You (mistral-nemo) read client.py and explain the main components
+🤖 [Reads file and analyzes]
+📄 client.py contains...
+
+👤 You (mistral-nemo) create a test file
+🤖 [Plans: create test.py with basic structure]
+✅ Created test.py
 ```
 
-### Code Search
+### Using Commands
 ```
-User: Find all functions that use 'requests' library
-Assistant: [Searches codebase]
-📊 Found 3 matches in 2 files
+👤 You (mistral-nemo) /model
+📦 Available Models:
+1. mistral-nemo:12b-instruct-2407-q2_K ✓
+2. llama3.2
+3. codellama
+
+👤 You (mistral-nemo) /session
+📋 Session Memory
+📄 Files Read:
+  • client.py (15,230 chars)
+  • server.py (8,542 chars)
+
+👤 You (mistral-nemo) /history
+📜 Command History:
+  1. list files in this directory
+  2. read client.py
+  3. create a test file
 ```
 
-### Project Analysis
+### Smart Planning
 ```
-User: Analyze this project structure
-Assistant: [Analyzes project]
-📦 Project Type: Python
-📊 Files: 15 total
-🔍 Main files: main.py, requirements.txt, setup.py
+User: Add error handling to all file operations
+Assistant:
+📋 Plan:
+  1. 🔓 Search for file operation functions
+  2. 🔓 Read each file
+  3. 🔒 Edit files to add try-catch blocks
+  4. 🔒 Test changes
+
+🚀 Execute? (Y/n)
 ```
 
 ## 🛠️ Development
@@ -178,26 +224,50 @@ The system includes comprehensive error handling:
 
 ### Common Issues
 
-1. **"Server path not found"**
-   - Ensure you're running from the correct directory
-   - Check that `mcp-server/server.py` exists
+1. **"Cannot connect to server at http://localhost:8000"**
+   - Make sure the MCP server is running first
+   - Run: `./start_server.sh` or `cd mcp-server && python3 server.py`
+   - Check if port 8000 is already in use
 
-2. **"Failed to initialize MCP server"**
-   - Check that all dependencies are installed
-   - Verify Python 3.8+ is being used
+2. **"Ollama not available"**
+   - Install Ollama from https://ollama.ai/
+   - Pull at least one model: `ollama pull mistral-nemo:12b-instruct-2407-q2_K`
+   - Ensure Ollama service is running
 
-3. **"Tool execution timed out"**
-   - Some operations may take longer than 60 seconds
-   - Check if the operation is actually running
+3. **"Module not found" errors**
+   - Run the setup script: `python setup.py`
+   - Or install manually:
+     ```bash
+     cd mcp-server && pip install -r requirements.txt
+     cd ../mcp-client && pip install -r requirements.txt
+     ```
 
-4. **"Command contains potentially dangerous operations"**
-   - The command was blocked for security reasons
-   - Use safer alternatives or modify the security rules
+4. **"Tool execution timed out"**
+   - Some operations may take longer than expected
+   - The server will retry with exponential backoff
 
-### Debug Mode
-Run with debug output:
+5. **Command history not working**
+   - Ensure `prompt_toolkit` is installed
+   - Try reinstalling: `pip install prompt_toolkit>=3.0.0`
+
+### Custom Configuration
+
+**Change MCP Server Port:**
+Edit `mcp-server/server.py` line 337:
+```python
+uvicorn.run(app, host="0.0.0.0", port=8000)  # Change port here
+```
+
+Then set the env variable:
 ```bash
-PYTHONPATH=. python -m mcp-client.client
+export MCP_SERVER_URL="http://localhost:YOUR_PORT"
+./start_client.sh
+```
+
+**Change Workspace:**
+```bash
+export WORKSPACE_PATH="/path/to/your/workspace"
+./start_server.sh
 ```
 
 ## 🤝 Contributing

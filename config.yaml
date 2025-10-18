@@ -1,0 +1,147 @@
+# Autonomous AI Coding Assistant Configuration
+
+# AI Model Settings
+ai:
+  # Default model to use
+  default_model: "mistral-nemo:12b-instruct-2407-q2_K"
+
+  # Model configurations
+  models:
+    - name: "mistral-nemo:12b-instruct-2407-q2_K"
+      provider: "ollama"
+      context_length: 4096
+      temperature: 0.7
+
+    - name: "llama3.2"
+      provider: "ollama"
+      context_length: 8192
+      temperature: 0.7
+
+    - name: "codellama"
+      provider: "ollama"
+      context_length: 16384
+      temperature: 0.5
+
+# MCP Server Settings
+mcp_server:
+  host: "0.0.0.0"
+  port: 8000
+  workspace_path: "."  # Default workspace, can be overridden by env var
+
+# Client Settings
+client:
+  server_url: "http://localhost:8000"
+  connection_timeout: 30
+  tool_timeout: 60
+
+# UI Settings
+ui:
+  # Rich console theme
+  theme: "monokai"
+
+  # Show line numbers in code display
+  show_line_numbers: true
+
+  # Maximum preview length for file content
+  preview_length: 500
+
+  # Commands configuration
+  commands:
+    - command: "/model"
+      description: "Switch AI model"
+      enabled: true
+
+    - command: "/clear"
+      description: "Clear screen"
+      enabled: true
+
+    - command: "/session"
+      description: "Show session memory"
+      enabled: true
+
+    - command: "/history"
+      description: "Show command history"
+      enabled: true
+
+    - command: "/context"
+      description: "Manage context length"
+      enabled: true
+
+    - command: "/help"
+      description: "Show help"
+      enabled: true
+
+    - command: "/quit"
+      description: "Exit assistant"
+      enabled: true
+
+# Session Management
+session:
+  # Maximum files to keep in session memory
+  max_files_in_memory: 10
+
+  # Maximum conversation context items
+  max_conversation_context: 10
+
+  # Persist session to disk
+  persist_sessions: false
+  session_file: ".sessions.json"
+
+# Planning Settings
+planning:
+  # Auto-approve read-only operations
+  auto_approve_readonly: false
+
+  # Show detailed plan breakdown
+  show_detailed_plan: true
+
+  # Maximum steps in a plan
+  max_plan_steps: 20
+
+# Security Settings
+security:
+  # Enable path validation
+  validate_paths: true
+
+  # Enable command safety checks
+  check_dangerous_commands: true
+
+  # Workspace isolation
+  enforce_workspace_isolation: true
+
+  # Dangerous command patterns (regex)
+  dangerous_patterns:
+    - 'rm\s+-rf'
+    - 'mkfs'
+    - 'format'
+    - 'dd\s+if='
+    - '>\s*/dev/'
+    - 'chmod\s+777'
+    - 'sudo'
+    - 'passwd'
+
+# Logging Settings
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "assistant.log"
+  enable_file_logging: false
+
+# System Prompts
+prompts:
+  # Main system prompt for task planning
+  planning_prompt: |
+    You are an intelligent AI assistant. Create a SMART execution plan using the context provided.
+
+    INTELLIGENT PLANNING RULES:
+    1. Be specific with file paths - never use generic names
+    2. Use session context to avoid redundant operations
+    3. Break complex requests into logical steps
+    4. Prioritize read operations before write operations
+
+    Return ONLY valid JSON with the plan structure.
+
+  # Prompt for conversational responses
+  conversation_prompt: |
+    You are an intelligent AI coding assistant with memory of our session.
+    Be conversational, helpful, and use the session context intelligently.
+    Give specific answers based on what you know from the session.

@@ -15,115 +15,168 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Confirm
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import box
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.formatted_text import HTML
+
 console = Console()
 
+class CommandCompleter(Completer):
+    """Custom completer for slash commands"""
+
+    def __init__(self):
+        self.commands = [
+            ("/model", "Switch AI model"),
+            ("/clear", "Clear screen"),
+            ("/session", "Show session memory"),
+            ("/context", "Show/set context length"),
+            ("/history", "Show command history"),
+            ("/help", "Show help"),
+            ("/quit", "Exit assistant"),
+        ]
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+
+        # Only complete if user typed /
+        if text.startswith('/'):
+            word = text[1:].lower()  # Remove / and lowercase
+
+            for cmd, description in self.commands:
+                if cmd[1:].startswith(word):  # Match without /
+                    yield Completion(
+                        cmd[len(text):],  # Only complete the remaining part
+                        display=cmd,
+                        display_meta=description
+                    )
+
 class MCPClient:
-    """Simple MCP client"""
-    
-    def __init__(self, server_path: str, workspace: str):
-        self.server_path = server_path
+    """HTTP/SSE MCP Client - connects to standalone MCP server"""
+
+    def __init__(self, server_url: str, workspace: str):
+        self.server_url = server_url.rstrip('/')
+        self.sse_url = f"{self.server_url}/sse"
         self.workspace = workspace
-        self.process = None
+        self.session = None
         self.request_id = 0
-        
+
     async def start(self):
-        """Start the MCP server"""
-        # Start server process
-        self.process = await asyncio.create_subprocess_exec(
-            "python3", self.server_path, "--stdio",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env={**dict(os.environ), "WORKSPACE_PATH": self.workspace}
-        )
-        
-        # Wait for server to be ready
-        await asyncio.sleep(2)
-        
-        # Initialize MCP connection
-        await self.send_request("initialize", {
-            "protocolVersion": "2024-11-05", 
-            "capabilities": {},
-            "clientInfo": {"name": "client", "version": "1.0.0"}
-        })
-        
-        response = await self.read_response()
-        if response is None:
-            return False
-            
-        # Send initialized notification (required by MCP protocol)
-        await self.send_request("notifications/initialized", None)
-        
-        return True
-    
-    async def send_request(self, method: str, params):
-        """Send JSON-RPC request"""
-        request = {
-            "jsonrpc": "2.0",
-            "method": method
-        }
-        
-        # Notifications don't have IDs
-        if method.startswith("notifications/"):
-            if params is not None:
-                request["params"] = params
-        else:
-            self.request_id += 1
-            request["id"] = self.request_id
-            if params is not None:
-                request["params"] = params
-                
-        request_str = json.dumps(request) + "\n"
-        self.process.stdin.write(request_str.encode())
-        await self.process.stdin.drain()
-        
-    async def read_response(self) -> Optional[dict]:
-        """Read JSON-RPC response"""
+        """Initialize connection to MCP server"""
+        import aiohttp
+
+        # Create HTTP session
+        self.session = aiohttp.ClientSession()
+
+        # Test server health
         try:
-            line = await asyncio.wait_for(self.process.stdout.readline(), timeout=10.0)
-            if line:
-                return json.loads(line.decode())
-        except:
-            pass
-        return None
-    
+            async with self.session.get(f"{self.server_url}/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
+                if response.status != 200:
+                    console.print(f"[yellow]⚠️  Server health check failed (status {response.status})[/yellow]")
+                    return False
+        except Exception as e:
+            console.print(f"[red]❌ Cannot connect to server at {self.server_url}[/red]")
+            console.print(f"[yellow]Error: {e}[/yellow]")
+            console.print(f"[dim]Make sure the server is running: python mcp-server/server.py[/dim]")
+            return False
+
+        return True
+
     async def call_tool(self, tool_name: str, arguments: dict) -> dict:
-        """Call a tool"""
-        await self.send_request("tools/call", {"name": tool_name, "arguments": arguments})
-        response = await self.read_response()
-        if response and "result" in response:
-            result = response["result"]
-            # Handle FastMCP format - extract from content if needed
-            if isinstance(result, dict) and "content" in result:
-                if isinstance(result["content"], list) and len(result["content"]) > 0:
-                    first_content = result["content"][0]
-                    if first_content.get("type") == "text":
-                        try:
-                            # Try to parse as JSON
-                            return json.loads(first_content["text"])
-                        except:
-                            # Return as text if not JSON
-                            return {"status": "success", "content": first_content["text"]}
-            return result
-        return {"status": "error", "message": "No response"}
-    
+        """Call a tool via SSE"""
+        if not self.session:
+            return {"status": "error", "message": "Client not initialized"}
+
+        try:
+            # Prepare MCP tool call request
+            self.request_id += 1
+            request_data = {
+                "jsonrpc": "2.0",
+                "id": self.request_id,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments
+                }
+            }
+
+            # Call tool via SSE
+            async with self.session.post(
+                self.sse_url,
+                json=request_data,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=60)
+            ) as response:
+                if response.status != 200:
+                    return {"status": "error", "message": f"Server error: {response.status}"}
+
+                result = await response.json()
+
+                # Handle MCP response format
+                if "result" in result:
+                    tool_result = result["result"]
+
+                    # Handle FastMCP content format
+                    if isinstance(tool_result, dict) and "content" in tool_result:
+                        content_list = tool_result["content"]
+                        if isinstance(content_list, list) and len(content_list) > 0:
+                            first_content = content_list[0]
+                            if first_content.get("type") == "text":
+                                try:
+                                    # Try to parse as JSON
+                                    return json.loads(first_content["text"])
+                                except:
+                                    return {"status": "success", "content": first_content["text"]}
+
+                    return tool_result
+
+                if "error" in result:
+                    return {"status": "error", "message": result["error"].get("message", "Unknown error")}
+
+                return {"status": "error", "message": "Invalid response format"}
+
+        except asyncio.TimeoutError:
+            return {"status": "error", "message": "Tool call timed out"}
+        except Exception as e:
+            return {"status": "error", "message": f"Request failed: {str(e)}"}
+
     async def list_tools(self) -> list:
         """List available tools"""
-        await self.send_request("tools/list", {})
-        response = await self.read_response()
-        if response and "result" in response:
-            return response["result"].get("tools", [])
-        return []
-    
+        if not self.session:
+            return []
+
+        try:
+            self.request_id += 1
+            request_data = {
+                "jsonrpc": "2.0",
+                "id": self.request_id,
+                "method": "tools/list",
+                "params": {}
+            }
+
+            async with self.session.post(
+                self.sse_url,
+                json=request_data,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    if "result" in result and "tools" in result["result"]:
+                        return result["result"]["tools"]
+                return []
+        except Exception as e:
+            console.print(f"[yellow]⚠️  Failed to list tools: {e}[/yellow]")
+            return []
+
     async def close(self):
-        """Close the connection"""
-        if self.process:
-            self.process.terminate()
-            await self.process.wait()
+        """Close the HTTP session"""
+        if self.session:
+            await self.session.close()
 
 class AutonomousCodingAgent:
     def __init__(self, default_model="mistral-nemo:12b-instruct-2407-q2_K"):
@@ -708,16 +761,26 @@ Keep responses informative and reference specific files/context when relevant.""
         console.print("\n")
         console.print(Panel.fit(
             "[bold cyan]🤖 Autonomous AI Coding Assistant[/bold cyan]\n\n"
-            "[dim]Commands: /model /clear /help /session /quit[/dim]",
+            "[dim]Commands: /model /clear /help /session /history /context /quit[/dim]\n"
+            "[dim]Tip: Press ↑↓ for history, type / for commands[/dim]",
             border_style="cyan",
             box=box.DOUBLE
         ))
         console.print("\n")
-        
+
+        # Create prompt session with history and completion
+        session = PromptSession(
+            history=InMemoryHistory(),
+            completer=CommandCompleter(),
+            complete_while_typing=True
+        )
+
         while True:
             try:
-                user_input = Prompt.ask(
-                    f"[bold cyan]👤 You[/bold cyan] [dim]({self.current_model.split(':')[0]})[/dim]"
+                # Get input with prompt_toolkit (supports history and completion)
+                model_name = self.current_model.split(':')[0]
+                user_input = await session.prompt_async(
+                    HTML(f'<cyan><b>👤 You</b></cyan> <dim>({model_name})</dim> ')
                 ).strip()
                 
                 if not user_input:
@@ -739,15 +802,37 @@ Keep responses informative and reference specific files/context when relevant.""
                     elif cmd == 'session':
                         self.show_session_memory()
                         continue
+                    elif cmd == 'history':
+                        console.print("\n[bold cyan]📜 Command History[/bold cyan]\n")
+                        history_items = list(session.history.load_history_strings())
+                        if history_items:
+                            for i, item in enumerate(history_items[-20:], 1):  # Show last 20
+                                console.print(f"  {i}. {item}")
+                        else:
+                            console.print("[dim]No history yet[/dim]")
+                        console.print()
+                        continue
+                    elif cmd.startswith('context'):
+                        # Show or set context length
+                        console.print("\n[bold cyan]📏 Context Management[/bold cyan]")
+                        console.print("[dim]Context length management coming soon...[/dim]\n")
+                        continue
                     elif cmd == 'help':
                         console.print("\n[bold]Commands:[/bold]")
-                        console.print("  /model   - Change model")
-                        console.print("  /clear   - Clear screen")
-                        console.print("  /session - Show session memory")
-                        console.print("  /quit    - Exit\n")
+                        console.print("  /model    - Switch AI model")
+                        console.print("  /clear    - Clear screen")
+                        console.print("  /session  - Show session memory")
+                        console.print("  /history  - Show command history")
+                        console.print("  /context  - Manage context length")
+                        console.print("  /help     - Show this help")
+                        console.print("  /quit     - Exit assistant\n")
+                        console.print("[dim]Tips:[/dim]")
+                        console.print("  • Press ↑/↓ to navigate command history")
+                        console.print("  • Type / to see available commands\n")
                         continue
                     else:
-                        console.print(f"[red]Unknown: /{cmd}[/red]\n")
+                        console.print(f"[red]Unknown command: /{cmd}[/red]")
+                        console.print("[dim]Type /help for available commands[/dim]\n")
                         continue
                 
                 await self.execute_task(user_input)
@@ -770,38 +855,38 @@ Keep responses informative and reference specific files/context when relevant.""
             box=box.DOUBLE
         ))
         console.print("\n")
-        
+
+        # Get workspace using prompt_toolkit
+        workspace_session = PromptSession()
         try:
-            workspace = Prompt.ask("[cyan]📁 Workspace[/cyan]", default=".")
+            workspace = await workspace_session.prompt_async(
+                HTML('<cyan>📁 Workspace</cyan> <dim>(default: .)</dim>: ')
+            )
+            workspace = workspace.strip() or "."
         except (EOFError, KeyboardInterrupt):
             workspace = "."
             console.print("[dim]Using current directory[/dim]")
-        
-        server_path = "/Users/pranavkrishnadanda/Downloads/agents_with_mcp/coding-assistant/mcp-server/server.py"
-        
-        # Validate server path
-        if not os.path.exists(server_path):
-            console.print(f"[red]❌ Server not found at: {server_path}[/red]")
-            console.print("[yellow]Please ensure you're running from the correct directory[/yellow]")
-            return
-        
+
+        # Default MCP server URL
+        server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
+
+        console.print(f"[dim]Connecting to MCP server at {server_url}[/dim]")
         console.print("\n")
-        self.client = MCPClient(server_path, workspace)
+        self.client = MCPClient(server_url, workspace)
         
         try:
             with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as progress:
                 task = progress.add_task("🔗 Connecting...", total=None)
-                
-                # Start server with timeout
-                await asyncio.wait_for(self.client.start(), timeout=30.0)
-                
-                # Load tools with timeout
+
+                # Connect to server
+                if not await self.client.start():
+                    console.print("[red]❌ Failed to connect to MCP server[/red]")
+                    return
+
+                # Load tools
                 progress.update(task, description="📋 Loading tools...")
-                self.available_tools = await asyncio.wait_for(
-                    self.client.list_tools(), 
-                    timeout=10.0
-                )
-                
+                self.available_tools = await self.client.list_tools()
+
                 # Complete progress
                 progress.update(task, description="✅ Connected")
                 progress.update(task, completed=True)
@@ -820,13 +905,9 @@ Keep responses informative and reference specific files/context when relevant.""
             console.print(Panel(info_table, title="[green]✅ Connected[/green]", border_style="green"))
             
             await self.interactive_mode()
-                
-        except asyncio.TimeoutError:
-            console.print("[red]❌ Connection timed out[/red]")
-            console.print("[yellow]Please check if the server is running correctly[/yellow]")
+
         except Exception as e:
-            console.print(f"[red]❌ Connection failed: {e}[/red]")
-            console.print("[yellow]Please check the server logs for more details[/yellow]")
+            console.print(f"[red]❌ Error: {e}[/red]")
         finally:
             if self.client:
                 await self.client.close()

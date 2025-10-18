@@ -298,12 +298,40 @@ def create_directory(path: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    # Run the server
-    import sys
-    import asyncio
-    if len(sys.argv) > 1 and sys.argv[1] == "--stdio":
-        # Run in stdio mode for MCP
-        asyncio.run(mcp.run_stdio_async())
-    else:
-        # Run in normal mode
-        mcp.run()
+    import uvicorn
+    from datetime import datetime
+    from starlette.routing import Route
+    from starlette.responses import JSONResponse
+
+    # Health check endpoint
+    async def health_check(request):
+        return JSONResponse({
+            "status": "healthy",
+            "service": "code-assistant-mcp-server",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+    async def get_root(request):
+        return JSONResponse({
+            "name": "Code Assistant MCP Server",
+            "version": "1.0.0",
+            "endpoints": {
+                "/": "Server info",
+                "/health": "Health check",
+                "/sse": "MCP communication endpoint"
+            }
+        })
+
+    # Get the SSE app
+    app = mcp.sse_app()
+
+    # Add custom routes
+    app.router.routes.extend([
+        Route("/health", health_check, methods=["GET"]),
+        Route("/", get_root, methods=["GET"]),
+    ])
+
+    # Run as web service
+    print("🚀 Starting Code Assistant MCP Server on http://localhost:8000")
+    print("📡 SSE endpoint: http://localhost:8000/sse")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
