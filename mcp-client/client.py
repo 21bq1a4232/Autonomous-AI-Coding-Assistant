@@ -191,10 +191,10 @@ class MCPClient:
                 pass
 
 class AutonomousCodingAgent:
-    def __init__(self, default_model="mistral-nemo:12b-instruct-2407-q2_K"):
+    def __init__(self, default_model=None):
         self.client = None
         self.available_tools = []
-        self.current_model = default_model
+        self.current_model = default_model  # Will be set after loading models
         self.available_models = []
         self.conversation_history = []
         
@@ -313,24 +313,24 @@ Keep it brief and technical."""
         console.print()
     
     def load_available_models(self):
-        """Load Ollama models"""
+        """Load Ollama models and set default to first available - NO HARDCODING"""
         try:
             # Check if Ollama is available
             result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=5)
             if result.returncode != 0:
-                console.print("[yellow]⚠️  Ollama not available, using default model[/yellow]")
-                self.available_models = [self.current_model]
+                console.print("[red]❌ Ollama not available - please install Ollama[/red]")
+                self.available_models = []
                 return
-            
+
             console.print("[dim]Loading models from Ollama...[/dim]")
-            
+
             # Use subprocess instead of ollama.list() to avoid hanging
             models_output = result.stdout.strip()
             if not models_output:
-                self.available_models = [self.current_model]
-                console.print(f"[cyan]📦 Found {len(self.available_models)} models[/cyan]")
+                console.print("[red]❌ No models found - please pull a model with 'ollama pull'[/red]")
+                self.available_models = []
                 return
-            
+
             # Parse the ollama list output
             model_names = []
             for line in models_output.split('\n')[1:]:  # Skip header
@@ -339,16 +339,24 @@ Keep it brief and technical."""
                     parts = line.split()
                     if parts:
                         model_names.append(parts[0])
-            
-            self.available_models = model_names if model_names else [self.current_model]
-            console.print(f"[cyan]📦 Found {len(self.available_models)} models[/cyan]")
-            
+
+            self.available_models = model_names
+
+            # Set current model to first available if not already set
+            if not self.current_model and self.available_models:
+                self.current_model = self.available_models[0]
+                console.print(f"[cyan]📦 Found {len(self.available_models)} models - using {self.current_model}[/cyan]")
+            elif self.current_model:
+                console.print(f"[cyan]📦 Found {len(self.available_models)} models - using specified model[/cyan]")
+            else:
+                console.print("[red]❌ No models available[/red]")
+
         except subprocess.TimeoutExpired:
-            console.print("[yellow]⚠️  Ollama timeout, using default model[/yellow]")
-            self.available_models = [self.current_model]
+            console.print("[yellow]⚠️  Ollama timeout - check if Ollama is running[/yellow]")
+            self.available_models = []
         except Exception as e:
             console.print(f"[yellow]⚠️  Could not load models: {e}[/yellow]")
-            self.available_models = [self.current_model]
+            self.available_models = []
     
     def list_models(self):
         """Display models"""
@@ -392,12 +400,18 @@ Keep it brief and technical."""
             session_context = self.get_session_context()
 
             # Pure AI prompt - let the model understand naturally
-            planning_prompt = f"""You are an expert AI coding assistant with full autonomy. Understand the user's request naturally and create an execution plan.
+            planning_prompt = f"""You are an expert AI coding assistant with full autonomy. Understand the user's request naturally.
 
 USER: "{user_request}"
 
 SESSION MEMORY:
 {session_context}
+
+ANALYZE THE REQUEST:
+- If it's a greeting (hi, hello, thanks): Set tool to null for conversational response
+- If it's a question about files in memory: Use session memory, set tool to null
+- If it requires reading/searching/analyzing: Use appropriate tools
+- If it requires writing/editing/running: Use tools with approval
 
 AVAILABLE TOOLS:
 - list_files(path) - List directory contents
@@ -411,20 +425,19 @@ AVAILABLE TOOLS:
 - create_directory(path) - Create directory [APPROVAL NEEDED]
 
 INSTRUCTIONS:
-1. Understand what the user wants naturally - don't overthink it
-2. Check session memory - don't re-read files already in memory
-3. Break into logical steps using the tools above
+1. For greetings or questions about known info: Set tool to null
+2. For file operations: Check session memory first, use tools if needed
+3. For write operations: Set needs_approval to true
 4. Be specific with paths and arguments
-5. Set needs_approval: true for write_file, edit_file, execute_command, create_directory
-6. Return ONLY valid JSON in this exact format
+5. Return ONLY valid JSON
 
-REQUIRED JSON FORMAT:
+JSON FORMAT:
 {{
-  "understanding": "What the user wants in one sentence",
+  "understanding": "What the user wants",
   "steps": [
     {{
       "step": 1,
-      "action": "Clear description of this step",
+      "action": "Description",
       "tool": "tool_name",
       "arguments": {{"param": "value"}},
       "needs_approval": false
@@ -432,7 +445,7 @@ REQUIRED JSON FORMAT:
   ]
 }}
 
-Think naturally and respond with JSON only."""
+For conversational queries (greetings, known info), use tool: null."""
 
             try:
                 response = ollama.chat(
@@ -637,7 +650,7 @@ Think naturally and respond with JSON only."""
     async def execute_task(self, user_request: str):
         """
         Execute task using PURE AI INTELLIGENCE - Fully autonomous like Claude Code
-        Read-only operations execute automatically, write operations ask per-step
+        Let the AI brain handle EVERYTHING - including greetings
         """
         console.print()
 
@@ -647,6 +660,13 @@ Think naturally and respond with JSON only."""
         if not plan.get('steps'):
             console.print("[red]❌ Could not create plan[/red]")
             console.print("[dim]Try rephrasing your request[/dim]\n")
+            return
+
+        # Check if this is a conversational response (no tools needed)
+        first_step = plan['steps'][0] if plan.get('steps') else {}
+        if not first_step.get('tool') or first_step.get('tool') == 'None':
+            # AI decided this is conversational - respond directly
+            await self.handle_conversation(user_request)
             return
 
         # Display plan
@@ -914,8 +934,8 @@ async def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="mistral-nemo:12b-instruct-2407-q2_K",
-        help="Default Ollama model to use"
+        default=None,
+        help="Specific Ollama model to use (default: first available model)"
     )
 
     args = parser.parse_args()
