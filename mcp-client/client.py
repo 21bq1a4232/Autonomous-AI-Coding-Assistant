@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import traceback
 from typing import Optional
 from pathlib import Path
 import ollama
@@ -57,14 +58,12 @@ class CommandCompleter(Completer):
                     )
 
 class MCPClient:
-    """MCP Client using stdio (simple and reliable)"""
+    """MCP Client using stdio"""
 
     def __init__(self, server_path: str, workspace: str):
         self.server_path = server_path
         self.workspace = workspace
-        self.process = None
-        self.read_stream = None
-        self.write_stream = None
+        self.stdio_context = None
         self.client = None
 
     async def start(self):
@@ -80,18 +79,22 @@ class MCPClient:
                 env={**dict(os.environ), "WORKSPACE_PATH": self.workspace}
             )
 
-            # Connect via stdio
-            self.read_stream, self.write_stream = await stdio_client(server_params)
-            self.client = ClientSession(self.read_stream, self.write_stream)
+            # Connect via stdio using context manager properly
+            self.stdio_context = stdio_client(server_params)
+            read_stream, write_stream = await self.stdio_context.__aenter__()
 
-            # Initialize session
+            # Create client session
+            self.client = ClientSession(read_stream, write_stream)
             await self.client.__aenter__()
+
+            # Initialize the session
             await self.client.initialize()
 
             return True
 
         except Exception as e:
             console.print(f"[red]❌ Failed to start MCP server: {e}[/red]")
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
             return False
 
     async def call_tool(self, tool_name: str, arguments: dict) -> dict:
@@ -135,6 +138,11 @@ class MCPClient:
         if self.client:
             try:
                 await self.client.__aexit__(None, None, None)
+            except:
+                pass
+        if self.stdio_context:
+            try:
+                await self.stdio_context.__aexit__(None, None, None)
             except:
                 pass
 
