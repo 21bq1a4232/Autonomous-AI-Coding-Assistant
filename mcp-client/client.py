@@ -132,6 +132,120 @@ class AutonomousCodingAgent:
         self.current_model = default_model
         self.available_models = []
         self.conversation_history = []
+        
+        # Session memory for files and context
+        self.session_memory = {
+            "files_read": {},  # filename -> {content, summary, timestamp}
+            "project_context": {},  # project analysis results
+            "conversation_context": [],  # key conversation points
+            "code_snippets": {},  # important code snippets
+        }
+    
+    def add_file_to_memory(self, filename: str, content: str, summary: str = None):
+        """Add a file to session memory"""
+        import time
+        
+        # Generate summary if not provided
+        if not summary:
+            summary = self.generate_file_summary(content, filename)
+        
+        self.session_memory["files_read"][filename] = {
+            "content": content,
+            "summary": summary,
+            "timestamp": time.time(),
+            "size": len(content),
+            "lines": len(content.split('\n'))
+        }
+        
+        console.print(f"[dim]📝 Added {filename} to session memory ({len(content)} chars)[/dim]")
+    
+    def generate_file_summary(self, content: str, filename: str) -> str:
+        """Generate a summary of file content"""
+        try:
+            # Create a concise summary prompt
+            summary_prompt = f"""Analyze this file and provide a concise summary (2-3 sentences):
+
+File: {filename}
+Content: {content[:1000]}...
+
+Focus on:
+- What this file does
+- Key functions/classes
+- Main purpose
+
+Keep it brief and technical."""
+
+            response = ollama.chat(
+                model=self.current_model,
+                messages=[{"role": "user", "content": summary_prompt}]
+            )
+            return response['message']['content'].strip()
+        except:
+            return f"File: {filename} ({len(content)} characters)"
+    
+    def get_session_context(self) -> str:
+        """Get current session context for AI"""
+        context_parts = []
+        
+        # Add project context
+        if self.session_memory["project_context"]:
+            context_parts.append(f"Project: {self.session_memory['project_context']}")
+        
+        # Add files in memory
+        if self.session_memory["files_read"]:
+            context_parts.append("Files in session:")
+            for filename, info in self.session_memory["files_read"].items():
+                context_parts.append(f"- {filename}: {info['summary']}")
+        
+        # Add recent conversation context
+        if self.session_memory["conversation_context"]:
+            context_parts.append("Recent context:")
+            for ctx in self.session_memory["conversation_context"][-3:]:  # Last 3 items
+                context_parts.append(f"- {ctx}")
+        
+        return "\n".join(context_parts) if context_parts else "No session context yet."
+    
+    def add_conversation_context(self, context: str):
+        """Add important conversation context"""
+        self.session_memory["conversation_context"].append(context)
+        # Keep only last 10 items
+        if len(self.session_memory["conversation_context"]) > 10:
+            self.session_memory["conversation_context"] = self.session_memory["conversation_context"][-10:]
+    
+    def show_session_memory(self):
+        """Display current session memory"""
+        console.print("\n[bold cyan]📋 Session Memory[/bold cyan]\n")
+        
+        # Files in memory
+        if self.session_memory["files_read"]:
+            files_table = Table(title="📄 Files Read", box=box.ROUNDED)
+            files_table.add_column("File", style="cyan")
+            files_table.add_column("Size", justify="right")
+            files_table.add_column("Lines", justify="right") 
+            files_table.add_column("Summary", style="dim")
+            
+            for filename, info in self.session_memory["files_read"].items():
+                files_table.add_row(
+                    filename,
+                    f"{info['size']:,} chars",
+                    f"{info['lines']:,}",
+                    info['summary'][:50] + "..." if len(info['summary']) > 50 else info['summary']
+                )
+            console.print(files_table)
+        else:
+            console.print("[dim]No files in memory yet[/dim]")
+        
+        # Project context
+        if self.session_memory["project_context"]:
+            console.print(f"\n[bold]🏗️  Project Context:[/bold] {self.session_memory['project_context']}")
+        
+        # Conversation context
+        if self.session_memory["conversation_context"]:
+            console.print(f"\n[bold]💬 Recent Context:[/bold]")
+            for i, ctx in enumerate(self.session_memory["conversation_context"][-5:], 1):
+                console.print(f"  {i}. {ctx}")
+        
+        console.print()
     
     def load_available_models(self):
         """Load Ollama models"""
@@ -207,17 +321,34 @@ class AutonomousCodingAgent:
             
             tools_list = ", ".join([t.get("name", "") for t in self.available_tools])
             
+            # Get session context for intelligent planning
+            session_context = self.get_session_context()
+            
             planning_prompt = f"""User request: "{user_request}"
 
-Create an execution plan. Return ONLY valid JSON:
+SESSION CONTEXT:
+{session_context}
+
+You are an intelligent AI assistant. Create a SMART execution plan using the context above.
+
+INTELLIGENT PLANNING RULES:
+1. If user asks to "list files" or "show files", use list_files(path=".")
+2. If user mentions "the .py file" but you don't know which one, list files FIRST to find Python files
+3. If user asks about files already in session memory, reference them by exact name
+4. Be SPECIFIC with file paths - never use generic names like "file_name" or "filename"
+5. If user says "read the .py file" and multiple .py files exist, list files first to identify them
+6. Use session context to avoid redundant operations
+7. Break complex requests into logical steps
+
+Return ONLY valid JSON:
 {{
-  "understanding": "what user wants",
+  "understanding": "specific understanding of what user wants",
   "steps": [
     {{
       "step": 1,
-      "action": "description",
-      "tool": "tool_name",
-      "arguments": {{}},
+      "action": "specific description of this step",
+      "tool": "exact_tool_name",
+      "arguments": {{"exact_param": "specific_value"}},
       "needs_approval": false
     }}
   ]
@@ -236,16 +367,11 @@ TOOL SIGNATURES:
 - get_file_info(path: str) - Get file information
 - create_directory(path: str) - Create directory
 
-IMPORTANT: Set "needs_approval" to true ONLY for:
-- write_file, edit_file (file modifications)
-- execute_command (running commands)
-- create_directory (creating directories)
+APPROVAL SETTINGS:
+- needs_approval: true for write_file, edit_file, execute_command, create_directory
+- needs_approval: false for read_file, list_files, get_file_info, analyze_project, search_code
 
-Set "needs_approval" to false for safe operations like:
-- read_file, list_files, get_file_info (reading)
-- analyze_project, search_code (analysis)
-
-Use EXACT parameter names from signatures above. Be specific. Think step by step."""
+Be intelligent and specific. Use exact file names when known."""
 
             try:
                 response = ollama.chat(
@@ -347,22 +473,66 @@ Use EXACT parameter names from signatures above. Be specific. Think step by step
                     if result.get('status') == 'success':
                         console.print(f"[green]✅ Done[/green]")
                         
-                        # Display file content for read operations
-                        if tool == 'read_file' and 'content' in result:
-                            content = result['content']
-                            # Show first 500 chars with syntax highlighting
-                            preview = content[:500] + "..." if len(content) > 500 else content
-                            syntax = Syntax(preview, "python", theme="monokai", line_numbers=True)
-                            console.print(f"\n[cyan]📄 File content:[/cyan]")
-                            console.print(syntax)
-                            console.print(f"\n[dim]Total length: {len(content)} characters[/dim]")
+                        # Handle different tool types intelligently
+                        if tool == 'list_files':
+                            # Parse and display file listing nicely
+                            if 'files' in result:
+                                files = result['files']
+                                console.print(f"\n[cyan]📁 Found {len(files)} items:[/cyan]")
+                                for file_info in files[:10]:  # Show first 10
+                                    name = file_info.get('name', 'unknown')
+                                    file_type = file_info.get('type', 'unknown')
+                                    icon = "📁" if file_type == 'directory' else "📄"
+                                    console.print(f"   {icon} {name}")
+                                if len(files) > 10:
+                                    console.print(f"   [dim]... and {len(files) - 10} more[/dim]")
+                                
+                                # Add directory listing to session context
+                                file_names = [f['name'] for f in files if f.get('type') != 'directory']
+                                if file_names:
+                                    self.add_conversation_context(f"Directory contains files: {', '.join(file_names[:5])}")
+                            elif 'content' in result:
+                                # Handle simple string list format
+                                files_text = result['content']
+                                console.print(f"\n[cyan]📁 Directory contents:[/cyan]")
+                                console.print(f"[dim]{files_text}[/dim]")
+                                # Extract file names for context
+                                lines = files_text.split('\n')
+                                file_names = [line.strip() for line in lines if line.strip() and not line.startswith('total')]
+                                if file_names:
+                                    self.add_conversation_context(f"Directory contains: {', '.join(file_names[:5])}")
+                        
+                        elif tool == 'read_file':
+                            # Handle file reading with memory storage
+                            if 'content' in result:
+                                content = result['content']
+                                filename = arguments.get('path', 'unknown_file')
+                                
+                                # Add to session memory
+                                self.add_file_to_memory(filename, content)
+                                
+                                # Show preview with syntax highlighting
+                                preview = content[:500] + "..." if len(content) > 500 else content
+                                file_ext = filename.split('.')[-1] if '.' in filename else 'text'
+                                syntax_lang = 'python' if file_ext in ['py'] else file_ext
+                                syntax = Syntax(preview, syntax_lang, theme="monokai", line_numbers=True)
+                                console.print(f"\n[cyan]📄 {filename} content:[/cyan]")
+                                console.print(syntax)
+                                console.print(f"\n[dim]📝 Added to session memory ({len(content)} chars)[/dim]")
+                        
+                        elif tool == 'execute_command':
+                            # Display command output
+                            if 'output' in result:
+                                output = result['output']
+                                console.print(f"\n[cyan]💻 Command output:[/cyan]")
+                                console.print(f"[dim]{output}[/dim]")
                         
                         # Display other result info
-                        if 'path' in result:
+                        if 'path' in result and tool not in ['read_file', 'list_files']:
                             console.print(f"   [cyan]📁 {result['path']}[/cyan]")
                         if 'changes' in result:
                             console.print(f"   [cyan]📝 {result['changes']} changes made[/cyan]")
-                        if 'output' in result and tool != 'read_file':
+                        if 'output' in result and tool not in ['read_file', 'execute_command', 'list_files']:
                             console.print(f"   [cyan]💬 {result['output']}[/cyan]")
                             
                         return {"status": "success", "result": result}
@@ -399,6 +569,10 @@ Use EXACT parameter names from signatures above. Be specific. Think step by step
                 context = await self.client.call_tool("analyze_project", {"path": "."})
                 if isinstance(context, str):
                     context = json.loads(context)
+                
+                # Save project context to memory
+                self.session_memory["project_context"] = context
+                
                 progress.update(task, completed=True)
                 console.print(f"[cyan]📦 Project:[/cyan] {context.get('project_type', 'unknown')}")
                 console.print(f"[cyan]📊 Files:[/cyan] {context.get('total_files', 0)}\n")
@@ -453,10 +627,16 @@ Use EXACT parameter names from signatures above. Be specific. Think step by step
             'what can you do', 'help me understand', 'explain', 'tell me about'
         ]
         
+        # Questions about files in memory should be simple conversations
+        memory_questions = [
+            'what does', 'how does', 'explain the', 'what is', 'can you explain',
+            'what are the', 'how do', 'why does', 'where is', 'what happens'
+        ]
+        
         coding_keywords = [
             'create', 'write', 'build', 'make', 'develop', 'code', 'implement', 'fix', 'debug',
-            'file', 'function', 'class', 'variable', 'install', 'run', 'execute', 'test',
-            'read', 'open', 'show', 'display', 'list', 'find', 'search', 'analyze', 'check'
+            'install', 'run', 'execute', 'test', 'read', 'open', 'show', 'display', 
+            'list', 'find', 'search', 'analyze', 'check'
         ]
         
         request_lower = user_request.lower()
@@ -465,6 +645,15 @@ Use EXACT parameter names from signatures above. Be specific. Think step by step
         for keyword in simple_keywords:
             if keyword in request_lower:
                 return True
+        
+        # Check if asking about files already in memory
+        if self.session_memory["files_read"]:
+            for filename in self.session_memory["files_read"].keys():
+                if filename.lower() in request_lower:
+                    # If asking about a file in memory, treat as conversation
+                    for mem_q in memory_questions:
+                        if mem_q in request_lower:
+                            return True
                 
         # Check for coding keywords - if found, it's not simple
         for keyword in coding_keywords:
@@ -477,25 +666,37 @@ Use EXACT parameter names from signatures above. Be specific. Think step by step
     async def handle_conversation(self, user_request: str):
         """Handle simple conversation without tools"""
         try:
+            # Get session context
+            session_context = self.get_session_context()
+            
+            # Build intelligent context-aware prompt
+            context_prompt = f"""You are an intelligent AI coding assistant with memory of our session.
+
+SESSION CONTEXT:
+{session_context}
+
+USER REQUEST: "{user_request}"
+
+Instructions:
+- If greeting, greet back and mention what files/context you remember from this session
+- If asking about files you've read, use the session context to provide detailed answers
+- If asking "what files did you see" or similar, list the specific files from session context
+- If asking about code/files, reference what you know from session memory with specific details
+- If asking what you can do, explain your coding capabilities
+- Be conversational, helpful, and use the session context intelligently
+- Give specific answers based on what you actually know from the session
+
+Keep responses informative and reference specific files/context when relevant."""
+
             response = ollama.chat(
                 model=self.current_model,
-                messages=[{
-                    "role": "user", 
-                    "content": f"""You are a helpful AI coding assistant. The user said: "{user_request}"
-                    
-Respond naturally and helpfully. If they're greeting you, greet them back and briefly explain what you can help with.
-If they're asking what you can do, explain that you're a coding assistant that can help with:
-- Creating and editing files
-- Running commands  
-- Analyzing projects
-- Debugging code
-- And more coding tasks
-
-Keep your response concise and friendly."""
-                }]
+                messages=[{"role": "user", "content": context_prompt}]
             )
             
             ai_response = response['message']['content']
+            
+            # Add to conversation context
+            self.add_conversation_context(f"User: {user_request} | Assistant: {ai_response[:100]}...")
             
             console.print(f"\n[bold green]🤖 Assistant:[/bold green] {ai_response}\n")
             
@@ -507,7 +708,7 @@ Keep your response concise and friendly."""
         console.print("\n")
         console.print(Panel.fit(
             "[bold cyan]🤖 Autonomous AI Coding Assistant[/bold cyan]\n\n"
-            "[dim]Commands: /model /clear /help /quit[/dim]",
+            "[dim]Commands: /model /clear /help /session /quit[/dim]",
             border_style="cyan",
             box=box.DOUBLE
         ))
@@ -535,11 +736,15 @@ Keep your response concise and friendly."""
                         console.clear()
                         console.print("[green]🗑️  Cleared[/green]\n")
                         continue
+                    elif cmd == 'session':
+                        self.show_session_memory()
+                        continue
                     elif cmd == 'help':
                         console.print("\n[bold]Commands:[/bold]")
-                        console.print("  /model - Change model")
-                        console.print("  /clear - Clear screen")
-                        console.print("  /quit  - Exit\n")
+                        console.print("  /model   - Change model")
+                        console.print("  /clear   - Clear screen")
+                        console.print("  /session - Show session memory")
+                        console.print("  /quit    - Exit\n")
                         continue
                     else:
                         console.print(f"[red]Unknown: /{cmd}[/red]\n")
@@ -548,6 +753,9 @@ Keep your response concise and friendly."""
                 await self.execute_task(user_input)
                 
             except KeyboardInterrupt:
+                console.print("\n[cyan]👋 Goodbye![/cyan]\n")
+                break
+            except EOFError:
                 console.print("\n[cyan]👋 Goodbye![/cyan]\n")
                 break
             except Exception as e:
@@ -563,7 +771,12 @@ Keep your response concise and friendly."""
         ))
         console.print("\n")
         
-        workspace = Prompt.ask("[cyan]📁 Workspace[/cyan]", default=".")
+        try:
+            workspace = Prompt.ask("[cyan]📁 Workspace[/cyan]", default=".")
+        except (EOFError, KeyboardInterrupt):
+            workspace = "."
+            console.print("[dim]Using current directory[/dim]")
+        
         server_path = "/Users/pranavkrishnadanda/Downloads/agents_with_mcp/coding-assistant/mcp-server/server.py"
         
         # Validate server path
