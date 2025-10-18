@@ -298,41 +298,44 @@ def create_directory(path: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    import uvicorn
-    from datetime import datetime
-    from starlette.routing import Route
-    from starlette.responses import JSONResponse
+    import sys
 
-    # Health check endpoint
-    async def health_check(request):
-        from datetime import timezone
-        return JSONResponse({
-            "status": "healthy",
-            "service": "code-assistant-mcp-server",
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
+    # Check if running in stdio mode (default) or SSE mode
+    if "--sse" in sys.argv:
+        # SSE mode for web server
+        import uvicorn
+        from datetime import datetime, timezone
+        from starlette.routing import Route
+        from starlette.responses import JSONResponse
 
-    async def get_root(request):
-        return JSONResponse({
-            "name": "Code Assistant MCP Server",
-            "version": "1.0.0",
-            "endpoints": {
-                "/": "Server info",
-                "/health": "Health check",
-                "/sse": "MCP communication endpoint"
-            }
-        })
+        async def health_check(request):
+            return JSONResponse({
+                "status": "healthy",
+                "service": "code-assistant-mcp-server",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
 
-    # Get the SSE app
-    app = mcp.sse_app()
+        async def get_root(request):
+            return JSONResponse({
+                "name": "Code Assistant MCP Server",
+                "version": "1.0.0",
+                "endpoints": {
+                    "/": "Server info",
+                    "/health": "Health check",
+                    "/sse": "MCP communication endpoint"
+                }
+            })
 
-    # Add custom routes
-    app.router.routes.extend([
-        Route("/health", health_check, methods=["GET"]),
-        Route("/", get_root, methods=["GET"]),
-    ])
+        app = mcp.sse_app()
+        app.router.routes.extend([
+            Route("/health", health_check, methods=["GET"]),
+            Route("/", get_root, methods=["GET"]),
+        ])
 
-    # Run as web service
-    print("🚀 Starting Code Assistant MCP Server on http://localhost:8000")
-    print("📡 SSE endpoint: http://localhost:8000/sse")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        print("🚀 Starting Code Assistant MCP Server on http://localhost:8000")
+        print("📡 SSE endpoint: http://localhost:8000/sse")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    else:
+        # Default: stdio mode for direct client connection
+        print("🚀 Starting Code Assistant MCP Server (stdio mode)", file=sys.stderr)
+        mcp.run()

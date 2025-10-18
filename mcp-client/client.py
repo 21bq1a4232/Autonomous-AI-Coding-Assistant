@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from typing import Optional
+from pathlib import Path
 import ollama
 
 from rich.console import Console
@@ -56,127 +57,86 @@ class CommandCompleter(Completer):
                     )
 
 class MCPClient:
-    """HTTP/SSE MCP Client - connects to standalone MCP server"""
+    """MCP Client using stdio (simple and reliable)"""
 
-    def __init__(self, server_url: str, workspace: str):
-        self.server_url = server_url.rstrip('/')
-        self.sse_url = f"{self.server_url}/sse"
+    def __init__(self, server_path: str, workspace: str):
+        self.server_path = server_path
         self.workspace = workspace
-        self.session = None
-        self.request_id = 0
+        self.process = None
+        self.read_stream = None
+        self.write_stream = None
+        self.client = None
 
     async def start(self):
-        """Initialize connection to MCP server"""
-        import aiohttp
+        """Start MCP server as subprocess and connect via stdio"""
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
 
-        # Create HTTP session
-        self.session = aiohttp.ClientSession()
-
-        # Test server health
         try:
-            async with self.session.get(f"{self.server_url}/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
-                if response.status != 200:
-                    console.print(f"[yellow]⚠️  Server health check failed (status {response.status})[/yellow]")
-                    return False
+            # Start server as subprocess
+            server_params = StdioServerParameters(
+                command="python3",
+                args=[self.server_path],
+                env={**dict(os.environ), "WORKSPACE_PATH": self.workspace}
+            )
+
+            # Connect via stdio
+            self.read_stream, self.write_stream = await stdio_client(server_params)
+            self.client = ClientSession(self.read_stream, self.write_stream)
+
+            # Initialize session
+            await self.client.__aenter__()
+            await self.client.initialize()
+
+            return True
+
         except Exception as e:
-            console.print(f"[red]❌ Cannot connect to server at {self.server_url}[/red]")
-            console.print(f"[yellow]Error: {e}[/yellow]")
-            console.print(f"[dim]Make sure the server is running: python mcp-server/server.py[/dim]")
+            console.print(f"[red]❌ Failed to start MCP server: {e}[/red]")
             return False
 
-        return True
-
     async def call_tool(self, tool_name: str, arguments: dict) -> dict:
-        """Call a tool via SSE"""
-        if not self.session:
+        """Call a tool"""
+        if not self.client:
             return {"status": "error", "message": "Client not initialized"}
 
         try:
-            # Prepare MCP tool call request
-            self.request_id += 1
-            request_data = {
-                "jsonrpc": "2.0",
-                "id": self.request_id,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments
-                }
-            }
+            result = await self.client.call_tool(tool_name, arguments)
 
-            # Call tool via SSE
-            async with self.session.post(
-                self.sse_url,
-                json=request_data,
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=60)
-            ) as response:
-                if response.status != 200:
-                    return {"status": "error", "message": f"Server error: {response.status}"}
+            # Parse FastMCP result format
+            if hasattr(result, 'content') and result.content:
+                first_content = result.content[0]
+                if hasattr(first_content, 'text'):
+                    try:
+                        return json.loads(first_content.text)
+                    except:
+                        return {"status": "success", "content": first_content.text}
 
-                result = await response.json()
+            return {"status": "success", "result": str(result)}
 
-                # Handle MCP response format
-                if "result" in result:
-                    tool_result = result["result"]
-
-                    # Handle FastMCP content format
-                    if isinstance(tool_result, dict) and "content" in tool_result:
-                        content_list = tool_result["content"]
-                        if isinstance(content_list, list) and len(content_list) > 0:
-                            first_content = content_list[0]
-                            if first_content.get("type") == "text":
-                                try:
-                                    # Try to parse as JSON
-                                    return json.loads(first_content["text"])
-                                except:
-                                    return {"status": "success", "content": first_content["text"]}
-
-                    return tool_result
-
-                if "error" in result:
-                    return {"status": "error", "message": result["error"].get("message", "Unknown error")}
-
-                return {"status": "error", "message": "Invalid response format"}
-
-        except asyncio.TimeoutError:
-            return {"status": "error", "message": "Tool call timed out"}
         except Exception as e:
-            return {"status": "error", "message": f"Request failed: {str(e)}"}
+            return {"status": "error", "message": f"Tool call failed: {str(e)}"}
 
     async def list_tools(self) -> list:
         """List available tools"""
-        if not self.session:
+        if not self.client:
             return []
 
         try:
-            self.request_id += 1
-            request_data = {
-                "jsonrpc": "2.0",
-                "id": self.request_id,
-                "method": "tools/list",
-                "params": {}
-            }
-
-            async with self.session.post(
-                self.sse_url,
-                json=request_data,
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    if "result" in result and "tools" in result["result"]:
-                        return result["result"]["tools"]
-                return []
+            result = await self.client.list_tools()
+            if hasattr(result, 'tools'):
+                return [{"name": tool.name, "description": tool.description or ""} for tool in result.tools]
+            return []
         except Exception as e:
             console.print(f"[yellow]⚠️  Failed to list tools: {e}[/yellow]")
             return []
 
     async def close(self):
-        """Close the HTTP session"""
-        if self.session:
-            await self.session.close()
+        """Close the connection"""
+        if self.client:
+            try:
+                await self.client.__aexit__(None, None, None)
+            except:
+                pass
 
 class AutonomousCodingAgent:
     def __init__(self, default_model="mistral-nemo:12b-instruct-2407-q2_K"):
@@ -868,12 +828,18 @@ Keep responses informative and reference specific files/context when relevant.""
             workspace = "."
             console.print("[dim]Using current directory[/dim]")
 
-        # Default MCP server URL
-        server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
+        # Auto-detect server path
+        client_dir = Path(__file__).parent.resolve()
+        project_root = client_dir.parent
+        server_path = project_root / "mcp-server" / "server.py"
 
-        console.print(f"[dim]Connecting to MCP server at {server_url}[/dim]")
+        if not server_path.exists():
+            console.print(f"[red]❌ Server not found at: {server_path}[/red]")
+            return
+
+        console.print(f"[dim]Starting MCP server: {server_path.name}[/dim]")
         console.print("\n")
-        self.client = MCPClient(server_url, workspace)
+        self.client = MCPClient(str(server_path), workspace)
         
         try:
             with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as progress:
