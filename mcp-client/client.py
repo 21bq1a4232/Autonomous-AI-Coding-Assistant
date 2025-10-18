@@ -374,81 +374,95 @@ Keep it brief and technical."""
                 console.print(f"[green]✅ Switched to: {self.current_model}[/green]\n")
                 return True
         return False
+
     
     async def plan_task(self, user_request: str) -> dict:
-        """Plan task using AI"""
+        """
+        PURE AI PLANNING - No hardcoded patterns, just the model's brain
+        Like Claude Code: Trust the intelligence of the model completely
+        """
         with Progress(
             SpinnerColumn(),
             TextColumn("[cyan]{task.description}"),
             console=console
         ) as progress:
-            task = progress.add_task("🤖 Planning...", total=None)
-            
-            tools_list = ", ".join([t.get("name", "") for t in self.available_tools])
-            
-            # Get session context for intelligent planning
-            session_context = self.get_session_context()
-            
-            planning_prompt = f"""User request: "{user_request}"
+            task = progress.add_task("🧠 Thinking...", total=None)
 
-SESSION CONTEXT:
+            # Get session context
+            session_context = self.get_session_context()
+
+            # Pure AI prompt - let the model understand naturally
+            planning_prompt = f"""You are an expert AI coding assistant with full autonomy. Understand the user's request naturally and create an execution plan.
+
+USER: "{user_request}"
+
+SESSION MEMORY:
 {session_context}
 
-You are an intelligent AI assistant. Create a SMART execution plan using the context above.
+AVAILABLE TOOLS:
+- list_files(path) - List directory contents
+- read_file(path) - Read file content
+- write_file(path, content) - Write/create file [APPROVAL NEEDED]
+- edit_file(path, search, replace) - Edit file [APPROVAL NEEDED]
+- execute_command(command) - Run shell command [APPROVAL NEEDED]
+- search_code(query, path, file_pattern) - Search code
+- analyze_project(path) - Analyze project structure
+- get_file_info(path) - Get file info
+- create_directory(path) - Create directory [APPROVAL NEEDED]
 
-INTELLIGENT PLANNING RULES:
-1. If user asks to "list files" or "show files", use list_files(path=".")
-2. If user mentions "the .py file" but you don't know which one, list files FIRST to find Python files
-3. If user asks about files already in session memory, reference them by exact name
-4. Be SPECIFIC with file paths - never use generic names like "file_name" or "filename"
-5. If user says "read the .py file" and multiple .py files exist, list files first to identify them
-6. Use session context to avoid redundant operations
-7. Break complex requests into logical steps
+INSTRUCTIONS:
+1. Understand what the user wants naturally - don't overthink it
+2. Check session memory - don't re-read files already in memory
+3. Break into logical steps using the tools above
+4. Be specific with paths and arguments
+5. Set needs_approval: true for write_file, edit_file, execute_command, create_directory
+6. Return ONLY valid JSON in this exact format
 
-Return ONLY valid JSON:
+REQUIRED JSON FORMAT:
 {{
-  "understanding": "specific understanding of what user wants",
+  "understanding": "What the user wants in one sentence",
   "steps": [
     {{
       "step": 1,
-      "action": "specific description of this step",
-      "tool": "exact_tool_name",
-      "arguments": {{"exact_param": "specific_value"}},
+      "action": "Clear description of this step",
+      "tool": "tool_name",
+      "arguments": {{"param": "value"}},
       "needs_approval": false
     }}
   ]
 }}
 
-Available tools: {tools_list}
-
-TOOL SIGNATURES:
-- read_file(path: str) - Read file content
-- write_file(path: str, content: str) - Write/create file  
-- edit_file(path: str, search: str, replace: str) - Edit file
-- list_files(path: str = ".") - List directory contents
-- execute_command(command: str) - Run shell command
-- analyze_project(path: str = ".") - Analyze project structure
-- search_code(query: str, path: str = ".", file_pattern: str = "*.py") - Search code
-- get_file_info(path: str) - Get file information
-- create_directory(path: str) - Create directory
-
-APPROVAL SETTINGS:
-- needs_approval: true for write_file, edit_file, execute_command, create_directory
-- needs_approval: false for read_file, list_files, get_file_info, analyze_project, search_code
-
-Be intelligent and specific. Use exact file names when known."""
+Think naturally and respond with JSON only."""
 
             try:
                 response = ollama.chat(
                     model=self.current_model,
                     messages=[{"role": "user", "content": planning_prompt}],
-                    format="json"
+                    format="json",
+                    options={"temperature": 0.2, "top_p": 0.9}
                 )
-                plan = json.loads(response['message']['content'])
+
+                # Parse JSON
+                content = response['message']['content'].strip()
+                content = content.replace('```json', '').replace('```', '').strip()
+
+                plan = json.loads(content)
+
+                # Basic validation
+                if not plan.get('steps') or not isinstance(plan['steps'], list):
+                    raise ValueError("No steps in plan")
+
                 progress.update(task, completed=True)
                 return plan
+
+            except json.JSONDecodeError as e:
+                progress.update(task, completed=True)
+                console.print(f"[yellow]⚠️  Failed to parse response[/yellow]")
+                console.print(f"[dim]{str(e)}[/dim]")
+                return {"understanding": user_request, "steps": []}
             except Exception as e:
-                console.print(f"[red]Planning failed: {e}[/red]")
+                progress.update(task, completed=True)
+                console.print(f"[yellow]⚠️  Planning error: {e}[/yellow]")
                 return {"understanding": user_request, "steps": []}
     
     def display_plan(self, plan: dict):
@@ -621,112 +635,62 @@ Be intelligent and specific. Use exact file names when known."""
             return {"status": "error", "message": str(e)}
     
     async def execute_task(self, user_request: str):
-        """Execute full task"""
-        # Check if this is a simple conversation that doesn't need tools
-        if self.is_simple_conversation(user_request):
-            await self.handle_conversation(user_request)
-            return
-            
-        # Analyze context for complex tasks
-        with Progress(SpinnerColumn(), TextColumn("[cyan]{task.description}"), console=console) as progress:
-            task = progress.add_task("🔍 Analyzing...", total=None)
-            try:
-                context = await self.client.call_tool("analyze_project", {"path": "."})
-                if isinstance(context, str):
-                    context = json.loads(context)
-                
-                # Save project context to memory
-                self.session_memory["project_context"] = context
-                
-                progress.update(task, completed=True)
-                console.print(f"[cyan]📦 Project:[/cyan] {context.get('project_type', 'unknown')}")
-                console.print(f"[cyan]📊 Files:[/cyan] {context.get('total_files', 0)}\n")
-            except:
-                progress.update(task, completed=True)
-        
-        # Plan
+        """
+        Execute task using PURE AI INTELLIGENCE - Fully autonomous like Claude Code
+        Read-only operations execute automatically, write operations ask per-step
+        """
+        console.print()
+
+        # Let AI plan the task - it understands everything
         plan = await self.plan_task(user_request)
+
         if not plan.get('steps'):
-            console.print("[red]❌ Could not create plan[/red]\n")
+            console.print("[red]❌ Could not create plan[/red]")
+            console.print("[dim]Try rephrasing your request[/dim]\n")
             return
-        
-        # Display
+
+        # Display plan
         self.display_plan(plan)
-        
-        # Confirm
-        if not Confirm.ask("[bold green]🚀 Execute?[/bold green]", default=True):
-            console.print("[yellow]❌ Cancelled[/yellow]\n")
-            return
-        
-        # Execute
+
+        # Check if any steps need approval
+        has_dangerous_ops = any(
+            step.get('needs_approval', False) for step in plan.get('steps', [])
+        )
+
+        # If all operations are read-only, execute automatically
+        if not has_dangerous_ops:
+            console.print("[dim]🔓 All operations are read-only - executing automatically[/dim]\n")
+        else:
+            # For plans with write operations, confirm once
+            if not Confirm.ask("[bold cyan]🚀 Execute plan?[/bold cyan]", default=True):
+                console.print("[yellow]❌ Cancelled[/yellow]\n")
+                return
+
+        # Execute all steps
         results = []
         total = len(plan['steps'])
-        
-        console.print("\n")
-        console.print(Panel(f"Executing {total} steps...", border_style="cyan", box=box.DOUBLE))
-        
+
+        console.print()
+        console.print(Panel(f"Executing {total} step(s)...", border_style="cyan", box=box.DOUBLE))
+
         for step in plan['steps']:
             result = await self.execute_step(step, step['step'], total)
             results.append(result)
-            
+
             if result.get('status') == 'error':
-                if not Confirm.ask("\n[yellow]Error. Continue?[/yellow]", default=False):
+                if not Confirm.ask("\n[yellow]⚠️  Error occurred. Continue?[/yellow]", default=False):
                     break
-        
+
         # Summary
         success = sum(1 for r in results if r.get('status') == 'success')
-        console.print("\n")
+        console.print()
         console.print(Panel(
             f"[green]✅ Completed {success}/{total} steps[/green]",
             title="[bold green]Summary[/bold green]",
             border_style="green",
             box=box.DOUBLE
         ))
-        console.print("\n")
-    
-    def is_simple_conversation(self, user_request: str) -> bool:
-        """Check if request is simple conversation vs coding task"""
-        simple_keywords = [
-            'hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening',
-            'how are you', 'what are you', 'who are you', 'thanks', 'thank you', 'bye', 'goodbye',
-            'what can you do', 'help me understand', 'explain', 'tell me about'
-        ]
-        
-        # Questions about files in memory should be simple conversations
-        memory_questions = [
-            'what does', 'how does', 'explain the', 'what is', 'can you explain',
-            'what are the', 'how do', 'why does', 'where is', 'what happens'
-        ]
-        
-        coding_keywords = [
-            'create', 'write', 'build', 'make', 'develop', 'code', 'implement', 'fix', 'debug',
-            'install', 'run', 'execute', 'test', 'read', 'open', 'show', 'display', 
-            'list', 'find', 'search', 'analyze', 'check'
-        ]
-        
-        request_lower = user_request.lower()
-        
-        # Check for simple conversation patterns
-        for keyword in simple_keywords:
-            if keyword in request_lower:
-                return True
-        
-        # Check if asking about files already in memory
-        if self.session_memory["files_read"]:
-            for filename in self.session_memory["files_read"].keys():
-                if filename.lower() in request_lower:
-                    # If asking about a file in memory, treat as conversation
-                    for mem_q in memory_questions:
-                        if mem_q in request_lower:
-                            return True
-                
-        # Check for coding keywords - if found, it's not simple
-        for keyword in coding_keywords:
-            if keyword in request_lower:
-                return False
-                
-        # If request is very short and doesn't contain coding terms, treat as simple
-        return len(user_request.split()) <= 5
+        console.print()
     
     async def handle_conversation(self, user_request: str):
         """Handle simple conversation without tools"""
